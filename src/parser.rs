@@ -2,12 +2,15 @@ use crate::error::GoldenPayError;
 use crate::models::{
     CategoryFilter, CategoryFilterOption, CategoryFilterType, CategorySubcategory,
     CategorySubcategoryType, ChatMessage, MarketOffer, Offer, OfferDetails, OfferEdit, OfferField,
-    OfferFieldOption, OfferFieldType, OrderInfo, OrderPage, OrderStatus, Review, UserInfo,
+    OfferFieldOption, OfferFieldType, OrderInfo, OrderPage, OrderStatus, PriceCalculation, Review,
+    RunnerChatMessage, RunnerChatNode, RunnerObject, RunnerOrdersCounters, RunnerUnknownObject,
+    UserInfo,
 };
 use crate::utils::extract_phpsessid;
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde_json::Value;
+use std::collections::HashMap;
 
 pub fn parse_user(home_html: &str, set_cookies: &[String]) -> Result<UserInfo, GoldenPayError> {
     let document = Html::parse_document(home_html);
@@ -131,37 +134,58 @@ pub fn parse_orders(html: &str, seller_id: i64) -> Result<Vec<OrderInfo>, Golden
 }
 
 pub fn parse_chat_messages(chat_id: &str, response: &Value) -> Vec<ChatMessage> {
+    parse_runner_objects(response)
+        .into_iter()
+        .filter_map(|object| match object {
+            RunnerObject::ChatNode(node) => Some(node),
+            _ => None,
+        })
+        .flat_map(|node| node.messages.into_iter())
+        .map(|message| ChatMessage {
+            id: message.id,
+            chat_id: chat_id.to_string(),
+            author_id: message.author_id,
+            text: message.html.as_deref().and_then(extract_message_text),
+        })
+        .collect()
+}
+
+pub fn parse_runner_objects(response: &Value) -> Vec<RunnerObject> {
     response
         .get("objects")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|object| object.get("type").and_then(Value::as_str) == Some("chat_node"))
-        .filter_map(|object| object.get("data"))
-        .flat_map(|data| {
-            data.get("messages")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-        })
-        .filter_map(|message| {
-            let id = message.get("id").and_then(Value::as_i64)?;
-            let author_id = message
-                .get("author")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
-            let html = message
-                .get("html")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            Some(ChatMessage {
-                id,
-                chat_id: chat_id.to_string(),
-                author_id,
-                text: extract_message_text(html),
-            })
-        })
+        .cloned()
+        .map(parse_runner_object)
         .collect()
+}
+
+pub fn parse_price_calculation(response: Value, input_price: f64) -> PriceCalculation {
+    let mut numeric_fields = HashMap::new();
+    collect_numeric_fields(None, &response, &mut numeric_fields);
+
+    let seller_price = detect_numeric_field(
+        &numeric_fields,
+        &["seller_price", "seller", "amount", "price", "sum"],
+    );
+    let buyer_price = detect_numeric_field(
+        &numeric_fields,
+        &["buyer_price", "buyer", "buyerAmount", "buyer_sum", "total"],
+    );
+    let commission = detect_numeric_field(
+        &numeric_fields,
+        &["commission", "fee", "site_fee", "siteCommission"],
+    );
+
+    PriceCalculation {
+        input_price,
+        seller_price,
+        buyer_price,
+        commission,
+        numeric_fields,
+        raw: response,
+    }
 }
 
 pub fn parse_order_page(html: &str, order_id: &str) -> Result<OrderPage, GoldenPayError> {
@@ -744,6 +768,125 @@ fn extract_message_text(html: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn parse_runner_object(object: Value) -> RunnerObject {
+    let object_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let tag = object
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+
+    match object_type.as_deref() {
+        Some("chat_node") => {
+            let data = object.get("data");
+            let messages = data
+                .and_then(|value| value.get("messages"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|message| {
+                    Some(RunnerChatMessage {
+                        id: message.get("id").and_then(Value::as_i64)?,
+                        author_id: message
+                            .get("author")
+                            .and_then(Value::as_i64)
+                            .unwrap_or_default(),
+                        html: message
+                            .get("html")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                    })
+                })
+                .collect();
+            let html = data
+                .and_then(|value| value.get("html"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+
+            RunnerObject::ChatNode(RunnerChatNode {
+                id,
+                tag,
+                messages,
+                html,
+            })
+        }
+        Some("orders_counters") => {
+            let data = object.get("data");
+            RunnerObject::OrdersCounters(RunnerOrdersCounters {
+                tag,
+                buyer: data
+                    .and_then(|value| value.get("buyer"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default(),
+                seller: data
+                    .and_then(|value| value.get("seller"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default(),
+            })
+        }
+        _ => RunnerObject::Unknown(RunnerUnknownObject {
+            object_type,
+            id,
+            tag,
+            raw: object,
+        }),
+    }
+}
+
+fn collect_numeric_fields(prefix: Option<&str>, value: &Value, out: &mut HashMap<String, f64>) {
+    match value {
+        Value::Number(number) => {
+            if let (Some(key), Some(parsed)) = (prefix, number.as_f64()) {
+                out.insert(key.to_string(), parsed);
+            }
+        }
+        Value::String(text) => {
+            if let (Some(key), Some(parsed)) = (prefix, parse_numeric_string(text)) {
+                out.insert(key.to_string(), parsed);
+            }
+        }
+        Value::Object(map) => {
+            for (key, nested) in map {
+                let next = prefix
+                    .map(|prefix| format!("{prefix}.{key}"))
+                    .unwrap_or_else(|| key.clone());
+                collect_numeric_fields(Some(&next), nested, out);
+            }
+        }
+        Value::Array(items) => {
+            for (index, nested) in items.iter().enumerate() {
+                let next = prefix.map(|prefix| format!("{prefix}[{index}]"));
+                collect_numeric_fields(next.as_deref(), nested, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_numeric_string(text: &str) -> Option<f64> {
+    let normalized = text.trim().replace(',', ".");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    normalized.parse::<f64>().ok()
+}
+
+fn detect_numeric_field(fields: &HashMap<String, f64>, aliases: &[&str]) -> Option<f64> {
+    fields.iter().find_map(|(key, value)| {
+        aliases
+            .iter()
+            .any(|alias| key.eq_ignore_ascii_case(alias) || key.ends_with(&format!(".{alias}")))
+            .then_some(*value)
+    })
+}
+
 fn build_chat_id(seller_id: i64, buyer_id: i64) -> String {
     let left = seller_id.min(buyer_id);
     let right = seller_id.max(buyer_id);
@@ -864,10 +1007,31 @@ mod tests {
         let raw = fixture("chat_runner.json");
         let value: Value = serde_json::from_str(&raw).unwrap();
         let messages = parse_chat_messages("users-111-222", &value);
+        let objects = parse_runner_objects(&value);
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id, 10);
         assert_eq!(messages[0].author_id, 222);
         assert_eq!(messages[0].text.as_deref(), Some("Hello\nworld"));
+        assert!(matches!(objects.first(), Some(RunnerObject::ChatNode(_))));
+    }
+
+    #[test]
+    fn parses_price_calculation_payload() {
+        let value = serde_json::json!({
+            "seller": "100",
+            "buyer": 104.5,
+            "commission": "4.5",
+            "meta": {
+                "site_fee": 4.5
+            }
+        });
+
+        let price = parse_price_calculation(value, 100.0);
+        assert_eq!(price.input_price, 100.0);
+        assert_eq!(price.seller_price, Some(100.0));
+        assert_eq!(price.buyer_price, Some(104.5));
+        assert_eq!(price.commission, Some(4.5));
+        assert_eq!(price.numeric_fields.get("meta.site_fee"), Some(&4.5));
     }
 }

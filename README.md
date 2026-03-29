@@ -9,6 +9,7 @@ Production-oriented Rust library for FunPay automation.
 - retry policy
 - order polling bot
 - state storage
+- delivery automation helpers
 - chat messaging
 - order page parsing
 - offer read and edit
@@ -65,6 +66,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `GoldenPaySession::fetch_offer_details()`
 - `GoldenPaySession::edit_offer()`
 - `GoldenPaySession::calc_price()`
+- `DeliveryService::process_paid_order()`
 - `GoldenPayBot::load_state()`
 - `GoldenPayBot::bootstrap()`
 - `GoldenPayBot::poll_once()`
+
+## Automation example
+
+See [examples/process_paid_order.rs](/D:/Funpay/goldenpay/examples/process_paid_order.rs) for a
+high-level flow that:
+
+- finds a paid order
+- reserves delivery items
+- deduplicates processed orders through `JsonDeliveryStore`
+- builds a delivery message
+- sends the message to the buyer chat

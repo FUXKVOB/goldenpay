@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-/// Error type returned by `goldenpay`.
 #[derive(Debug, Error)]
 pub enum GoldenPayError {
     #[error("missing golden key")]

@@ -2,11 +2,13 @@ use crate::config::GoldenPayConfig;
 use crate::error::GoldenPayError;
 use crate::models::{
     CategoryFilter, CategorySubcategory, ChatMessage, MarketOffer, Offer, OfferDetails, OfferEdit,
-    OrderInfo, OrderPage, UserInfo,
+    OfferSaveResponse, OrderInfo, OrderPage, PriceCalculation, RunnerResponse, UserInfo,
 };
+use crate::offer::OfferEditBuilder;
 use crate::parser::{
     parse_category_filters, parse_category_subcategories, parse_chat_messages, parse_market_offers,
-    parse_my_offers, parse_offer_details, parse_order_page, parse_orders, parse_user,
+    parse_my_offers, parse_offer_details, parse_order_page, parse_orders, parse_price_calculation,
+    parse_runner_objects, parse_user,
 };
 use crate::urls::Urls;
 use crate::utils::{random_tag, retry_sleep};
@@ -102,7 +104,11 @@ impl GoldenPaySession {
     }
 
     /// Sends a chat message to a dialog.
-    pub async fn send_message(&self, chat_id: &str, text: &str) -> Result<Value, GoldenPayError> {
+    pub async fn send_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Result<RunnerResponse, GoldenPayError> {
         let objects_json = serde_json::to_string(&vec![json!({
             "type": "chat_node",
             "id": chat_id,
@@ -174,8 +180,8 @@ impl GoldenPaySession {
             urlencoding::encode(&self.user.csrf_token)
         );
 
-        let value = self.request_runner(payload).await?;
-        Ok(parse_chat_messages(chat_id, &value))
+        let response = self.request_runner(payload).await?;
+        Ok(parse_chat_messages(chat_id, &response.raw))
     }
 
     /// Fetches your offers for a given node.
@@ -237,7 +243,7 @@ impl GoldenPaySession {
         node_id: i64,
         offer_id: i64,
         patch: OfferEdit,
-    ) -> Result<Value, GoldenPayError> {
+    ) -> Result<OfferSaveResponse, GoldenPayError> {
         let current = self.fetch_offer_details(node_id, offer_id).await?.current;
         let merged = current.merge(patch);
         let payload = build_offer_payload(&self.user.csrf_token, offer_id, node_id, &merged);
@@ -260,11 +266,25 @@ impl GoldenPaySession {
             })
             .await?;
 
-        Ok(response.json().await?)
+        Ok(parse_offer_save_response(response.json().await?))
+    }
+
+    /// Applies an offer edit built through [`OfferEditBuilder`].
+    pub async fn edit_offer_with(
+        &self,
+        node_id: i64,
+        offer_id: i64,
+        builder: OfferEditBuilder,
+    ) -> Result<OfferSaveResponse, GoldenPayError> {
+        self.edit_offer(node_id, offer_id, builder.build()).await
     }
 
     /// Calculates price information for a node.
-    pub async fn calc_price(&self, node_id: i64, price: f64) -> Result<Value, GoldenPayError> {
+    pub async fn calc_price(
+        &self,
+        node_id: i64,
+        price: f64,
+    ) -> Result<PriceCalculation, GoldenPayError> {
         let payload = format!("nodeId={node_id}&price={}", price as i64);
         let response = self
             .request_with_retry(|| {
@@ -282,7 +302,7 @@ impl GoldenPaySession {
                     .body(payload.clone())
             })
             .await?;
-        Ok(response.json().await?)
+        Ok(parse_price_calculation(response.json().await?, price))
     }
 
     /// Lists subcategories for a given node.
@@ -319,7 +339,7 @@ impl GoldenPaySession {
         Ok(parse_category_filters(&response.text().await?))
     }
 
-    async fn request_runner(&self, payload: String) -> Result<Value, GoldenPayError> {
+    async fn request_runner(&self, payload: String) -> Result<RunnerResponse, GoldenPayError> {
         let response = self
             .request_with_retry(|| {
                 self.http
@@ -337,7 +357,7 @@ impl GoldenPaySession {
                     .body(payload.clone())
             })
             .await?;
-        Ok(response.json().await?)
+        Ok(parse_runner_response(response.json().await?))
     }
 
     async fn request_with_retry<F>(&self, build: F) -> Result<Response, GoldenPayError>
@@ -475,4 +495,27 @@ fn field(key: &str, value: Option<&str>) -> String {
         urlencoding::encode(key),
         urlencoding::encode(value.unwrap_or_default())
     )
+}
+
+fn parse_runner_response(raw: Value) -> RunnerResponse {
+    let success = raw
+        .get("error")
+        .map(|value| value.is_null())
+        .unwrap_or(true);
+    let objects = parse_runner_objects(&raw);
+
+    RunnerResponse {
+        success,
+        objects,
+        raw,
+    }
+}
+
+fn parse_offer_save_response(raw: Value) -> OfferSaveResponse {
+    let success = raw
+        .get("error")
+        .map(|value| value.is_null())
+        .unwrap_or(true);
+
+    OfferSaveResponse { success, raw }
 }

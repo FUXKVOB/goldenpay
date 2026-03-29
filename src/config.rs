@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Runtime configuration for [`crate::GoldenPay`].
 #[derive(Debug, Clone)]
 pub struct GoldenPayConfig {
     pub golden_key: String,
@@ -13,14 +12,12 @@ pub struct GoldenPayConfig {
     pub state_path: Option<PathBuf>,
 }
 
-/// Retry behavior for HTTP requests.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
     pub base_delay: Duration,
 }
 
-/// Builder for [`GoldenPayConfig`].
 #[derive(Debug, Clone, Default)]
 pub struct GoldenPayConfigBuilder {
     golden_key: Option<String>,
@@ -33,7 +30,6 @@ pub struct GoldenPayConfigBuilder {
 }
 
 impl GoldenPayConfig {
-    /// Creates a config with a golden key and default values.
     pub fn new(golden_key: impl Into<String>) -> Self {
         Self {
             golden_key: golden_key.into(),
@@ -41,7 +37,6 @@ impl GoldenPayConfig {
         }
     }
 
-    /// Starts a builder for ergonomic configuration.
     pub fn builder() -> GoldenPayConfigBuilder {
         GoldenPayConfigBuilder::default()
     }

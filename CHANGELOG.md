@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- add builder-based configuration API
+- improve release metadata and documentation
+- add parser fixtures and tests
+- add publish checklist and examples
+- add git repository metadata for the public GitHub repo
+
 ## 0.1.0
 
 - initial `goldenpay` release on crates.io

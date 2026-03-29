@@ -1,0 +1,16 @@
+{
+  "objects": [
+    {
+      "type": "chat_node",
+      "data": {
+        "messages": [
+          {
+            "id": 10,
+            "author": 222,
+            "html": "<div class=\"chat-msg-text\">Hello<br>world</div>"
+          }
+        ]
+      }
+    }
+  ]
+}

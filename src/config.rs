@@ -1,0 +1,160 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// Runtime configuration for [`crate::GoldenPay`].
+#[derive(Debug, Clone)]
+pub struct GoldenPayConfig {
+    pub golden_key: String,
+    pub base_url: String,
+    pub user_agent: String,
+    pub poll_interval: Duration,
+    pub retry: RetryPolicy,
+    pub proxy: Option<String>,
+    pub state_path: Option<PathBuf>,
+}
+
+/// Retry behavior for HTTP requests.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_delay: Duration,
+}
+
+/// Builder for [`GoldenPayConfig`].
+#[derive(Debug, Clone, Default)]
+pub struct GoldenPayConfigBuilder {
+    golden_key: Option<String>,
+    base_url: Option<String>,
+    user_agent: Option<String>,
+    poll_interval: Option<Duration>,
+    retry: Option<RetryPolicy>,
+    proxy: Option<String>,
+    state_path: Option<PathBuf>,
+}
+
+impl GoldenPayConfig {
+    /// Creates a config with a golden key and default values.
+    pub fn new(golden_key: impl Into<String>) -> Self {
+        Self {
+            golden_key: golden_key.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Starts a builder for ergonomic configuration.
+    pub fn builder() -> GoldenPayConfigBuilder {
+        GoldenPayConfigBuilder::default()
+    }
+
+    pub fn with_proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.proxy = Some(proxy.into());
+        self
+    }
+
+    pub fn with_state_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.state_path = Some(path.into());
+        self
+    }
+}
+
+impl Default for GoldenPayConfig {
+    fn default() -> Self {
+        Self {
+            golden_key: String::new(),
+            base_url: "https://funpay.com".to_string(),
+            user_agent: format!("goldenpay/{}", env!("CARGO_PKG_VERSION")),
+            poll_interval: Duration::from_secs(2),
+            retry: RetryPolicy::default(),
+            proxy: None,
+            state_path: None,
+        }
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(300),
+        }
+    }
+}
+
+impl RetryPolicy {
+    pub fn new(max_attempts: u32, base_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            base_delay,
+        }
+    }
+}
+
+impl GoldenPayConfigBuilder {
+    pub fn golden_key(mut self, golden_key: impl Into<String>) -> Self {
+        self.golden_key = Some(golden_key.into());
+        self
+    }
+
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
+        self
+    }
+
+    pub fn poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.poll_interval = Some(poll_interval);
+        self
+    }
+
+    pub fn retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.retry = Some(retry);
+        self
+    }
+
+    pub fn proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.proxy = Some(proxy.into());
+        self
+    }
+
+    pub fn state_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.state_path = Some(path.into());
+        self
+    }
+
+    pub fn build(self) -> GoldenPayConfig {
+        let defaults = GoldenPayConfig::default();
+        GoldenPayConfig {
+            golden_key: self.golden_key.unwrap_or(defaults.golden_key),
+            base_url: self.base_url.unwrap_or(defaults.base_url),
+            user_agent: self.user_agent.unwrap_or(defaults.user_agent),
+            poll_interval: self.poll_interval.unwrap_or(defaults.poll_interval),
+            retry: self.retry.unwrap_or(defaults.retry),
+            proxy: self.proxy,
+            state_path: self.state_path,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_overrides_defaults() {
+        let config = GoldenPayConfig::builder()
+            .golden_key("abc")
+            .base_url("https://example.com")
+            .poll_interval(Duration::from_secs(5))
+            .retry_policy(RetryPolicy::new(7, Duration::from_secs(1)))
+            .build();
+
+        assert_eq!(config.golden_key, "abc");
+        assert_eq!(config.base_url, "https://example.com");
+        assert_eq!(config.poll_interval, Duration::from_secs(5));
+        assert_eq!(config.retry.max_attempts, 7);
+    }
+}

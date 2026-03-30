@@ -33,6 +33,8 @@ pub enum GoldenPayError {
         status: u16,
         body: String,
     },
+    #[error("delivery error: {0}")]
+    Delivery(#[from] crate::automation::DeliveryError),
     #[error("state store error: {message}")]
     State { message: String },
 }

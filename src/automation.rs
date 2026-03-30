@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::fs;
 use tokio::sync::Mutex;
 
@@ -39,6 +40,11 @@ pub struct DeliveryResult {
     pub delivered: Vec<DeliveryItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservedDelivery {
+    pub result: DeliveryResult,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessPaidOrderResult {
     pub delivery: DeliveryResult,
@@ -54,6 +60,7 @@ pub struct DeliveryMessageBuilder {
     pub include_order_id: bool,
     pub include_product_key: bool,
     pub footer: Option<String>,
+    pub template: Option<String>,
 }
 
 impl Default for DeliveryMessageBuilder {
@@ -65,6 +72,7 @@ impl Default for DeliveryMessageBuilder {
             include_order_id: true,
             include_product_key: true,
             footer: Some("If you have any questions, reply in this chat.".to_string()),
+            template: None,
         }
     }
 }
@@ -104,6 +112,16 @@ impl DeliveryMessageBuilder {
         self
     }
 
+    pub fn template(mut self, value: impl Into<String>) -> Self {
+        self.template = Some(value.into());
+        self
+    }
+
+    pub fn no_template(mut self) -> Self {
+        self.template = None;
+        self
+    }
+
     pub fn no_footer(mut self) -> Self {
         self.footer = None;
         self
@@ -134,6 +152,16 @@ impl DeliveryMessageBuilder {
     }
 
     pub fn build_message(&self, order: &OrderInfo, result: &DeliveryResult) -> String {
+        let items_block = self.format_items(&result.delivered);
+
+        if let Some(template) = &self.template {
+            return template
+                .replace("{buyer}", &order.buyer_username)
+                .replace("{order_id}", &result.order_id)
+                .replace("{product_key}", &result.product_key)
+                .replace("{items}", &items_block);
+        }
+
         let mut lines = vec![self.greeting.clone()];
 
         if self.include_order_id {
@@ -146,7 +174,7 @@ impl DeliveryMessageBuilder {
 
         lines.push(format!("Buyer: {}", order.buyer_username));
         lines.push(self.intro.clone());
-        lines.push(self.format_items(&result.delivered));
+        lines.push(items_block);
 
         if let Some(footer) = &self.footer {
             lines.push(footer.clone());
@@ -156,18 +184,18 @@ impl DeliveryMessageBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DeliveryError {
+    #[error("product not found")]
     ProductNotFound,
+    #[error("not enough items available: requested {requested}, available {available}")]
     NotEnoughItems { requested: usize, available: usize },
+    #[error("order was already delivered")]
     AlreadyDelivered,
+    #[error("order is not paid: status={status:?}")]
     OrderNotPaid { status: OrderStatus },
-}
-
-impl From<DeliveryError> for GoldenPayError {
-    fn from(value: DeliveryError) -> Self {
-        GoldenPayError::state(format!("delivery error: {value:?}"))
-    }
+    #[error("delivery message was rejected: {message}")]
+    MessageSendFailed { message: String },
 }
 
 pub trait ProductMatcher: Send + Sync {
@@ -275,21 +303,44 @@ impl DeliveryService {
         })
     }
 
+    pub fn reserve<M: ProductMatcher>(
+        &mut self,
+        matcher: &M,
+        order: &OrderInfo,
+    ) -> Result<ReservedDelivery, DeliveryError> {
+        Ok(ReservedDelivery {
+            result: self.deliver(matcher, order)?,
+        })
+    }
+
+    pub fn release_reserved(&mut self, reserved: ReservedDelivery) {
+        let inventory = self
+            .products
+            .entry(reserved.result.product_key.clone())
+            .or_default();
+
+        let mut restored = reserved.result.delivered;
+        restored.extend(inventory.items.drain(..));
+        inventory.items = restored;
+    }
+
+    pub fn remaining_items(&self, product_key: &str) -> Option<usize> {
+        self.products.get(product_key).map(|inventory| inventory.items.len())
+    }
+
     pub async fn deliver_order<M: ProductMatcher, S: DeliveryStore>(
         &mut self,
         matcher: &M,
         store: &S,
         order: &OrderInfo,
-    ) -> Result<DeliveryResult, DeliveryError> {
-        if store.is_delivered(&order.id).await {
-            return Err(DeliveryError::AlreadyDelivered);
+    ) -> Result<DeliveryResult, GoldenPayError> {
+        if store.contains_order(&order.id).await {
+            return Err(DeliveryError::AlreadyDelivered.into());
         }
 
         let result = self.deliver(matcher, order)?;
-        store
-            .mark_delivered(&result)
-            .await
-            .map_err(|_| DeliveryError::AlreadyDelivered)?;
+        store.claim_pending(&result).await?;
+        store.commit_delivered(&result).await?;
         Ok(result)
     }
 
@@ -313,11 +364,30 @@ impl DeliveryService {
             .into());
         }
 
-        let delivery = self.deliver_order(matcher, store, order).await?;
-        let message_text = builder.build_message(order, &delivery);
+        if store.contains_order(&order.id).await {
+            return Err(DeliveryError::AlreadyDelivered.into());
+        }
+
+        let reserved = self.reserve(matcher, order)?;
+        store.claim_pending(&reserved.result).await?;
+
+        let message_text = builder.build_message(order, &reserved.result);
         let runner_response = messenger
             .send_delivery_message(&order.chat_id, &message_text)
             .await?;
+        if !runner_response.success {
+            self.release_reserved(reserved);
+            store.release_pending(&order.id).await?;
+            return Err(DeliveryError::MessageSendFailed {
+                message: runner_response
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "runner response reported failure".to_string()),
+            }
+            .into());
+        }
+        store.commit_delivered(&reserved.result).await?;
+        let delivery = reserved.result;
 
         Ok(ProcessPaidOrderResult {
             delivery,
@@ -332,12 +402,22 @@ pub struct DeliveredOrderRecord {
     pub order_id: String,
     pub product_key: String,
     pub delivered: Vec<DeliveryItem>,
+    pub status: DeliveryRecordStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryRecordStatus {
+    Pending,
+    Delivered,
 }
 
 #[async_trait]
 pub trait DeliveryStore: Send + Sync {
-    async fn is_delivered(&self, order_id: &str) -> bool;
-    async fn mark_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError>;
+    async fn contains_order(&self, order_id: &str) -> bool;
+    async fn claim_pending(&self, result: &DeliveryResult) -> Result<(), GoldenPayError>;
+    async fn commit_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError>;
+    async fn release_pending(&self, order_id: &str) -> Result<(), GoldenPayError>;
 }
 
 #[derive(Default)]
@@ -353,30 +433,58 @@ impl MemoryDeliveryStore {
 
 #[async_trait]
 impl DeliveryStore for MemoryDeliveryStore {
-    async fn is_delivered(&self, order_id: &str) -> bool {
+    async fn contains_order(&self, order_id: &str) -> bool {
         self.inner.lock().await.contains_key(order_id)
     }
 
-    async fn mark_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
+    async fn claim_pending(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
+        let mut inner = self.inner.lock().await;
+        if inner.contains_key(&result.order_id) {
+            return Err(DeliveryError::AlreadyDelivered.into());
+        }
+
+        inner.insert(
+            result.order_id.clone(),
+            DeliveredOrderRecord {
+                order_id: result.order_id.clone(),
+                product_key: result.product_key.clone(),
+                delivered: result.delivered.clone(),
+                status: DeliveryRecordStatus::Pending,
+            },
+        );
+        Ok(())
+    }
+
+    async fn commit_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
         self.inner.lock().await.insert(
             result.order_id.clone(),
             DeliveredOrderRecord {
                 order_id: result.order_id.clone(),
                 product_key: result.product_key.clone(),
                 delivered: result.delivered.clone(),
+                status: DeliveryRecordStatus::Delivered,
             },
         );
+        Ok(())
+    }
+
+    async fn release_pending(&self, order_id: &str) -> Result<(), GoldenPayError> {
+        self.inner.lock().await.remove(order_id);
         Ok(())
     }
 }
 
 pub struct JsonDeliveryStore {
     path: PathBuf,
+    lock: Arc<Mutex<()>>,
 }
 
 impl JsonDeliveryStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            lock: Arc::new(Mutex::new(())),
+        }
     }
 
     async fn load_all(&self) -> Result<HashMap<String, DeliveredOrderRecord>, GoldenPayError> {
@@ -397,21 +505,51 @@ impl JsonDeliveryStore {
         }
 
         let raw = serde_json::to_string_pretty(records)?;
-        fs::write(&self.path, raw).await?;
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                GoldenPayError::state(format!("invalid file name for {}", self.path.display()))
+            })?;
+        let tmp_path = self.path.with_file_name(format!("{file_name}.tmp"));
+        fs::write(&tmp_path, raw).await?;
+        fs::rename(&tmp_path, &self.path).await?;
         Ok(())
     }
 }
 
 #[async_trait]
 impl DeliveryStore for JsonDeliveryStore {
-    async fn is_delivered(&self, order_id: &str) -> bool {
+    async fn contains_order(&self, order_id: &str) -> bool {
+        let _guard = self.lock.lock().await;
         self.load_all()
             .await
             .map(|records| records.contains_key(order_id))
             .unwrap_or(false)
     }
 
-    async fn mark_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
+    async fn claim_pending(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
+        let _guard = self.lock.lock().await;
+        let mut records = self.load_all().await?;
+        if records.contains_key(&result.order_id) {
+            return Err(DeliveryError::AlreadyDelivered.into());
+        }
+
+        records.insert(
+            result.order_id.clone(),
+            DeliveredOrderRecord {
+                order_id: result.order_id.clone(),
+                product_key: result.product_key.clone(),
+                delivered: result.delivered.clone(),
+                status: DeliveryRecordStatus::Pending,
+            },
+        );
+        self.save_all(&records).await
+    }
+
+    async fn commit_delivered(&self, result: &DeliveryResult) -> Result<(), GoldenPayError> {
+        let _guard = self.lock.lock().await;
         let mut records = self.load_all().await?;
         records.insert(
             result.order_id.clone(),
@@ -419,9 +557,23 @@ impl DeliveryStore for JsonDeliveryStore {
                 order_id: result.order_id.clone(),
                 product_key: result.product_key.clone(),
                 delivered: result.delivered.clone(),
+                status: DeliveryRecordStatus::Delivered,
             },
         );
         self.save_all(&records).await
+    }
+
+    async fn release_pending(&self, order_id: &str) -> Result<(), GoldenPayError> {
+        let _guard = self.lock.lock().await;
+        let mut records = self.load_all().await?;
+        if matches!(
+            records.get(order_id).map(|record| record.status),
+            Some(DeliveryRecordStatus::Pending)
+        ) {
+            records.remove(order_id);
+            self.save_all(&records).await?;
+        }
+        Ok(())
     }
 }
 
@@ -464,6 +616,7 @@ mod tests {
                 .push((chat_id.to_string(), text.to_string()));
             Ok(RunnerResponse {
                 success: true,
+                error_message: None,
                 objects: vec![RunnerObject::Unknown(RunnerUnknownObject {
                     object_type: Some("test".to_string()),
                     id: None,
@@ -531,7 +684,10 @@ mod tests {
         let second = service
             .deliver_order(&ExactSubcategoryMatcher, &store, &sample_order())
             .await;
-        assert!(matches!(second, Err(DeliveryError::AlreadyDelivered)));
+        assert!(matches!(
+            second,
+            Err(GoldenPayError::Delivery(DeliveryError::AlreadyDelivered))
+        ));
     }
 
     #[tokio::test]
@@ -551,8 +707,9 @@ mod tests {
             }],
         };
 
-        store.mark_delivered(&result).await.unwrap();
-        assert!(store.is_delivered("ORDERJSON").await);
+        store.claim_pending(&result).await.unwrap();
+        store.commit_delivered(&result).await.unwrap();
+        assert!(store.contains_order("ORDERJSON").await);
 
         let _ = fs::remove_file(path).await;
     }
@@ -642,6 +799,6 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, GoldenPayError::State { .. }));
+        assert!(matches!(error, GoldenPayError::Delivery(_)));
     }
 }

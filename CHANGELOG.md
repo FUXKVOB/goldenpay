@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- switch delivery flow to a safer reserve -> send -> commit sequence with pending delivery records
+- add pending/delivered delivery record states to reduce duplicate sends after partial failures
+- add internal mutex protection to JSON state and delivery stores to avoid parallel write races
+- keep JSON persistence atomic via temporary-file writes and rename
+- fix `calc_price()` so decimal prices are not truncated before request submission
+- add typed `GoldenPayError::Delivery(...)` errors instead of collapsing delivery failures into generic state errors
+- surface runner and offer-save error messages through typed response structs
+- refactor `client.rs` with reusable HTML GET and form POST helpers to reduce request boilerplate
+- add `GoldenPaySession::fetch_paid_orders()`
+- add `GoldenPaySession::fetch_category_metadata()`
+- add `DeliveryService::remaining_items()`
+
 ## 0.2.0
 
 - add typed `PriceCalculation` parsing with extracted seller, buyer, and commission fields

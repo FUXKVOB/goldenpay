@@ -67,6 +67,7 @@ pub struct PriceCalculation {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunnerResponse {
     pub success: bool,
+    pub error_message: Option<String>,
     pub objects: Vec<RunnerObject>,
     pub raw: serde_json::Value,
 }
@@ -112,6 +113,7 @@ pub struct RunnerUnknownObject {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OfferSaveResponse {
     pub success: bool,
+    pub error_message: Option<String>,
     pub raw: serde_json::Value,
 }
 

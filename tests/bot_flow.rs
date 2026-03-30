@@ -39,6 +39,7 @@ impl DeliveryMessenger for TestMessenger {
             .push((chat_id.to_string(), text.to_string()));
         Ok(RunnerResponse {
             success: true,
+            error_message: None,
             objects: vec![RunnerObject::Unknown(RunnerUnknownObject {
                 object_type: Some("test".to_string()),
                 id: None,

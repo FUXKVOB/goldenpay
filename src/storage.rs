@@ -37,17 +37,22 @@ impl StateStore for MemoryStateStore {
 
 pub struct JsonStateStore {
     path: PathBuf,
+    lock: Arc<Mutex<()>>,
 }
 
 impl JsonStateStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            lock: Arc::new(Mutex::new(())),
+        }
     }
 }
 
 #[async_trait]
 impl StateStore for JsonStateStore {
     async fn load(&self) -> Result<BotState, GoldenPayError> {
+        let _guard = self.lock.lock().await;
         if !self.path.exists() {
             return Ok(BotState::default());
         }
@@ -57,14 +62,27 @@ impl StateStore for JsonStateStore {
     }
 
     async fn save(&self, state: &BotState) -> Result<(), GoldenPayError> {
+        let _guard = self.lock.lock().await;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).await?;
         }
 
         let raw = serde_json::to_string_pretty(state)?;
-        fs::write(&self.path, raw).await?;
+        write_atomic_json(&self.path, &raw).await?;
         Ok(())
     }
+}
+
+async fn write_atomic_json(path: &std::path::Path, raw: &str) -> Result<(), GoldenPayError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| GoldenPayError::state(format!("invalid file name for {}", path.display())))?;
+    let tmp_path = path.with_file_name(format!("{file_name}.tmp"));
+
+    fs::write(&tmp_path, raw).await?;
+    fs::rename(&tmp_path, path).await?;
+    Ok(())
 }
 
 #[cfg(test)]

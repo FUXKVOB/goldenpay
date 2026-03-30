@@ -134,30 +134,24 @@ impl GoldenPaySession {
 
     /// Fetches current order shortcuts from the trade page.
     pub async fn fetch_orders(&self) -> Result<Vec<OrderInfo>, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.orders_trade())
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.orders_trade()).await?;
         let body = response.text().await?;
         parse_orders(&body, self.user.id)
     }
 
+    /// Fetches only paid orders from the trade page.
+    pub async fn fetch_paid_orders(&self) -> Result<Vec<OrderInfo>, GoldenPayError> {
+        Ok(self
+            .fetch_orders()
+            .await?
+            .into_iter()
+            .filter(|order| order.status == crate::models::OrderStatus::Paid)
+            .collect())
+    }
+
     /// Loads a single order page with parsed metadata and secrets.
     pub async fn fetch_order_page(&self, order_id: &str) -> Result<OrderPage, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.order_page(order_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.order_page(order_id)).await?;
         let body = response.text().await?;
         parse_order_page(&body, order_id)
     }
@@ -186,15 +180,7 @@ impl GoldenPaySession {
 
     /// Fetches your offers for a given node.
     pub async fn fetch_my_offers(&self, node_id: i64) -> Result<Vec<Offer>, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.lots_trade(node_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.lots_trade(node_id)).await?;
         Ok(parse_my_offers(&response.text().await?, node_id))
     }
 
@@ -203,15 +189,7 @@ impl GoldenPaySession {
         &self,
         node_id: i64,
     ) -> Result<Vec<MarketOffer>, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.lots_page(node_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.lots_page(node_id)).await?;
         Ok(parse_market_offers(&response.text().await?, node_id))
     }
 
@@ -221,15 +199,7 @@ impl GoldenPaySession {
         node_id: i64,
         offer_id: i64,
     ) -> Result<OfferDetails, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.offer_edit(node_id, offer_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.offer_edit(node_id, offer_id)).await?;
         Ok(parse_offer_details(
             &response.text().await?,
             offer_id,
@@ -249,21 +219,12 @@ impl GoldenPaySession {
         let payload = build_offer_payload(&self.user.csrf_token, offer_id, node_id, &merged);
 
         let response = self
-            .request_with_retry(|| {
-                self.http
-                    .post(self.urls.offer_save())
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(
-                        CONTENT_TYPE,
-                        "application/x-www-form-urlencoded; charset=UTF-8",
-                    )
-                    .header(ACCEPT, "application/json, text/javascript, */*; q=0.01")
-                    .header(ORIGIN, self.urls.base())
-                    .header(REFERER, self.urls.offer_edit(node_id, offer_id))
-                    .header("x-requested-with", "XMLHttpRequest")
-                    .body(payload.clone())
-            })
+            .post_form(
+                self.urls.offer_save(),
+                payload,
+                Some(self.urls.offer_edit(node_id, offer_id)),
+                "application/json, text/javascript, */*; q=0.01",
+            )
             .await?;
 
         Ok(parse_offer_save_response(response.json().await?))
@@ -285,24 +246,23 @@ impl GoldenPaySession {
         node_id: i64,
         price: f64,
     ) -> Result<PriceCalculation, GoldenPayError> {
-        let payload = format!("nodeId={node_id}&price={}", price as i64);
+        let input_price = price;
+        let price = if price.fract() == 0.0 {
+            format!("{price:.0}")
+        } else {
+            let formatted = format!("{price:.2}");
+            formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+        let payload = format!("nodeId={node_id}&price={price}");
         let response = self
-            .request_with_retry(|| {
-                self.http
-                    .post(self.urls.lots_calc())
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(
-                        CONTENT_TYPE,
-                        "application/x-www-form-urlencoded; charset=UTF-8",
-                    )
-                    .header(ACCEPT, "application/json, text/javascript, */*; q=0.01")
-                    .header(ORIGIN, self.urls.base())
-                    .header("x-requested-with", "XMLHttpRequest")
-                    .body(payload.clone())
-            })
+            .post_form(
+                self.urls.lots_calc(),
+                payload,
+                None::<String>,
+                "application/json, text/javascript, */*; q=0.01",
+            )
             .await?;
-        Ok(parse_price_calculation(response.json().await?, price))
+        Ok(parse_price_calculation(response.json().await?, input_price))
     }
 
     /// Lists subcategories for a given node.
@@ -310,15 +270,7 @@ impl GoldenPaySession {
         &self,
         node_id: i64,
     ) -> Result<Vec<CategorySubcategory>, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.lots_page(node_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.lots_page(node_id)).await?;
         Ok(parse_category_subcategories(&response.text().await?))
     }
 
@@ -327,35 +279,31 @@ impl GoldenPaySession {
         &self,
         node_id: i64,
     ) -> Result<Vec<CategoryFilter>, GoldenPayError> {
-        let response = self
-            .request_with_retry(|| {
-                self.http
-                    .get(self.urls.lots_page(node_id))
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(ACCEPT, "*/*")
-            })
-            .await?;
+        let response = self.get_html(self.urls.lots_page(node_id)).await?;
         Ok(parse_category_filters(&response.text().await?))
+    }
+
+    /// Fetches category filters and subcategories using a single page load.
+    pub async fn fetch_category_metadata(
+        &self,
+        node_id: i64,
+    ) -> Result<(Vec<CategorySubcategory>, Vec<CategoryFilter>), GoldenPayError> {
+        let response = self.get_html(self.urls.lots_page(node_id)).await?;
+        let body = response.text().await?;
+        Ok((
+            parse_category_subcategories(&body),
+            parse_category_filters(&body),
+        ))
     }
 
     async fn request_runner(&self, payload: String) -> Result<RunnerResponse, GoldenPayError> {
         let response = self
-            .request_with_retry(|| {
-                self.http
-                    .post(self.urls.runner())
-                    .header(USER_AGENT, &self.config.user_agent)
-                    .header(COOKIE, self.cookie_header())
-                    .header(
-                        CONTENT_TYPE,
-                        "application/x-www-form-urlencoded; charset=UTF-8",
-                    )
-                    .header(ACCEPT, "*/*")
-                    .header(ORIGIN, self.urls.base())
-                    .header(REFERER, format!("{}/chat/", self.urls.base()))
-                    .header("x-requested-with", "XMLHttpRequest")
-                    .body(payload.clone())
-            })
+            .post_form(
+                self.urls.runner(),
+                payload,
+                Some(format!("{}/chat/", self.urls.base())),
+                "*/*",
+            )
             .await?;
         Ok(parse_runner_response(response.json().await?))
     }
@@ -375,6 +323,55 @@ impl GoldenPaySession {
             ),
             None => format!("golden_key={}; cookie_prefs=1", self.config.golden_key),
         }
+    }
+
+    fn html_get(&self, url: impl Into<String>) -> reqwest::RequestBuilder {
+        self.http
+            .get(url.into())
+            .header(USER_AGENT, &self.config.user_agent)
+            .header(COOKIE, self.cookie_header())
+            .header(ACCEPT, "*/*")
+    }
+
+    async fn get_html(&self, url: impl Into<String>) -> Result<Response, GoldenPayError> {
+        let url = url.into();
+        self.request_with_retry(|| self.html_get(url.clone())).await
+    }
+
+    async fn post_form<R>(
+        &self,
+        url: impl Into<String>,
+        payload: String,
+        referer: Option<R>,
+        accept: &str,
+    ) -> Result<Response, GoldenPayError>
+    where
+        R: Into<String>,
+    {
+        let url = url.into();
+        let referer = referer.map(Into::into);
+        self.request_with_retry(|| {
+            let mut request = self
+                .http
+                .post(url.clone())
+                .header(USER_AGENT, &self.config.user_agent)
+                .header(COOKIE, self.cookie_header())
+                .header(
+                    CONTENT_TYPE,
+                    "application/x-www-form-urlencoded; charset=UTF-8",
+                )
+                .header(ACCEPT, accept)
+                .header(ORIGIN, self.urls.base())
+                .header("x-requested-with", "XMLHttpRequest")
+                .body(payload.clone());
+
+            if let Some(referer) = &referer {
+                request = request.header(REFERER, referer);
+            }
+
+            request
+        })
+        .await
     }
 }
 
@@ -498,24 +495,41 @@ fn field(key: &str, value: Option<&str>) -> String {
 }
 
 fn parse_runner_response(raw: Value) -> RunnerResponse {
-    let success = raw
-        .get("error")
-        .map(|value| value.is_null())
-        .unwrap_or(true);
+    let error_message = parse_error_message(&raw);
+    let success = error_message.is_none();
     let objects = parse_runner_objects(&raw);
 
     RunnerResponse {
         success,
+        error_message,
         objects,
         raw,
     }
 }
 
 fn parse_offer_save_response(raw: Value) -> OfferSaveResponse {
-    let success = raw
-        .get("error")
-        .map(|value| value.is_null())
-        .unwrap_or(true);
+    let error_message = parse_error_message(&raw);
+    let success = error_message.is_none();
 
-    OfferSaveResponse { success, raw }
+    OfferSaveResponse {
+        success,
+        error_message,
+        raw,
+    }
+}
+
+fn parse_error_message(raw: &Value) -> Option<String> {
+    let error = raw.get("error")?;
+    if error.is_null() {
+        return None;
+    }
+
+    if let Some(message) = error.as_str() {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    Some(error.to_string())
 }

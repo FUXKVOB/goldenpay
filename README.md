@@ -62,11 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `GoldenPay::connect()`
 - `GoldenPaySession::send_message()`
 - `GoldenPaySession::fetch_orders()`
+- `GoldenPaySession::fetch_paid_orders()`
 - `GoldenPaySession::fetch_order_page()`
 - `GoldenPaySession::fetch_offer_details()`
 - `GoldenPaySession::edit_offer()`
 - `GoldenPaySession::calc_price()`
+- `GoldenPaySession::fetch_category_metadata()`
 - `DeliveryService::process_paid_order()`
+- `DeliveryService::remaining_items()`
 - `GoldenPayBot::load_state()`
 - `GoldenPayBot::bootstrap()`
 - `GoldenPayBot::poll_once()`

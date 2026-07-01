@@ -1169,4 +1169,81 @@ mod tests {
         assert_eq!(user.csrf_token, "csrf");
         assert_eq!(user.phpsessid.as_deref(), Some("abc123"));
     }
+
+    #[test]
+    fn random_garbage_html_does_not_panic() {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+
+        for _ in 0..500 {
+            let len = rng.random_range(0..4096);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+            let html = String::from_utf8_lossy(&bytes);
+
+            let _ = parse_user(&html, &[]);
+            let _ = parse_orders(&html, rng.random());
+            let _ = parse_order_page(&html, "garbage");
+            let _ = parse_offer_details(&html, rng.random(), rng.random());
+            let _ = parse_my_offers(&html, rng.random());
+            let _ = parse_market_offers(&html, rng.random());
+            let _ = parse_category_subcategories(&html);
+            let _ = parse_category_filters(&html);
+            let _ = parse_category_tree(&html);
+        }
+    }
+
+    #[test]
+    fn random_garbage_json_does_not_panic() {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+
+        for _ in 0..500 {
+            let len = rng.random_range(0..2048);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+            let json_str = String::from_utf8_lossy(&bytes);
+
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                let _ = parse_price_calculation(value.clone(), rng.random::<f64>());
+                let _ = parse_runner_objects(&value);
+                let _ = parse_chat_messages("garbage", &value);
+            }
+        }
+    }
+
+    #[test]
+    fn random_valid_html_chunks_do_not_panic() {
+        use rand::RngExt;
+        let mut rng = rand::rng();
+
+        let templates = [
+            ("<html><body>{}</body></html>", 1),
+            ("<div>{}</div>", 1),
+            ("<span class=\"{}\">text</span>", 1),
+            ("<form><input name=\"{}\" value=\"{}\"></form>", 2),
+            ("<select><option value=\"{}\">{}</option></select>", 2),
+        ];
+
+        for _ in 0..500 {
+            let payload_len = rng.random_range(0..256);
+            let payload: String = (0..payload_len)
+                .map(|_| rng.random_range(char::from_u32(32).unwrap()..=char::from_u32(126).unwrap()))
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .collect();
+
+            let (template, count) = templates[rng.random_range(0..templates.len())];
+            let html = if count == 2 {
+                template.replacen("{}", &payload, 1).replacen("{}", &payload, 1)
+            } else {
+                template.replace("{}", &payload)
+            };
+
+            let _ = parse_user(&html, &[]);
+            let _ = parse_orders(&html, rng.random());
+            let _ = parse_order_page(&html, "chunk");
+            let _ = parse_offer_details(&html, rng.random(), rng.random());
+            let _ = parse_my_offers(&html, rng.random());
+            let _ = parse_market_offers(&html, rng.random());
+            let _ = parse_category_subcategories(&html);
+        }
+    }
 }

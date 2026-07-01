@@ -17,6 +17,8 @@ use crate::utils::{random_tag, retry_sleep};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, SET_COOKIE, USER_AGENT};
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 /// A reusable HTTP client for the `FunPay` API.
@@ -40,6 +42,7 @@ pub struct GoldenPaySession {
     config: GoldenPayConfig,
     urls: Urls,
     user: UserInfo,
+    rate_limiter: Option<Arc<Semaphore>>,
 }
 
 impl GoldenPay {
@@ -96,6 +99,9 @@ impl GoldenPay {
             config: self.config.clone(),
             urls: self.urls.clone(),
             user,
+            rate_limiter: self.config.max_concurrent_requests.map(|max| {
+                Arc::new(Semaphore::new(max.get()))
+            }),
         })
     }
 
@@ -390,6 +396,12 @@ impl GoldenPaySession {
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
+        let _permit = match &self.rate_limiter {
+            Some(sem) => Some(sem.acquire().await.map_err(|_| {
+                GoldenPayError::parse("rate_limiter", "semaphore closed")
+            })?),
+            None => None,
+        };
         request_with_retry(&self.config, build).await
     }
 
@@ -486,10 +498,8 @@ where
         }
     }
 
-    Err(GoldenPayError::parse(
-        "request_with_retry",
-        "retry loop exited unexpectedly",
-    ))
+    // unreachable: the loop always returns
+    unreachable!()
 }
 
 async fn ensure_success(

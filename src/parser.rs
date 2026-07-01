@@ -390,13 +390,7 @@ pub fn parse_market_offers(html: &str, node_id: i64) -> Vec<MarketOffer> {
     let price_selector = Selector::parse("div.tc-price").unwrap();
     let unit_selector = Selector::parse("span.unit").unwrap();
     let seller_selector = Selector::parse("span.pseudo-a[data-href]").unwrap();
-    let reviews_selector = Selector::parse("div.media-user-reviews").unwrap();
-    let rating_count_selector = Selector::parse("span.rating-mini-count").unwrap();
-    let rating_stars_selector = Selector::parse("div.rating-stars").unwrap();
     let offer_id_regex = &OFFER_ID_REGEX;
-    let user_id_regex = &USER_ID_REGEX;
-    let reviews_regex = &REVIEWS_REGEX;
-    let rating_regex = &RATING_REGEX;
     let mut offers = Vec::new();
 
     for item in document.select(&item_selector) {
@@ -424,45 +418,12 @@ pub fn parse_market_offers(html: &str, node_id: i64) -> Vec<MarketOffer> {
             .and_then(|el| el.select(&unit_selector).next())
             .map(|el| el.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
+
         let seller_node = item.select(&seller_selector).next();
-        let seller_name = seller_node
-            .as_ref()
-            .map(|el| el.text().collect::<String>().trim().to_string())
-            .unwrap_or_default();
-        let seller_id = seller_node
-            .and_then(|el| el.value().attr("data-href"))
-            .and_then(|href| user_id_regex.captures(href))
-            .and_then(|c| c.get(1))
-            .and_then(|m| m.as_str().parse::<i64>().ok())
-            .unwrap_or_default();
-        let seller_online = item.value().attr("data-online") == Some("1");
+        let (seller_name, seller_id, seller_online, seller_reviews, seller_rating) =
+            parse_market_seller(&item, &seller_node);
+
         let is_promo = item.value().classes().any(|c| c == "offer-promo");
-        let seller_reviews = item
-            .select(&reviews_selector)
-            .next()
-            .map(|node| {
-                node.select(&rating_count_selector)
-                    .next().map_or_else(|| node.text().collect::<String>(), |n| n.text().collect::<String>())
-            })
-            .and_then(|text| {
-                reviews_regex
-                    .captures(&text)
-                    .and_then(|c| c.get(1))
-                    .and_then(|m| m.as_str().parse::<u32>().ok())
-            })
-            .unwrap_or_default();
-        let seller_rating = item
-            .select(&reviews_selector)
-            .next()
-            .and_then(|node| node.select(&rating_stars_selector).next())
-            .and_then(|node| {
-                node.value().classes().find_map(|class| {
-                    rating_regex
-                        .captures(class)
-                        .and_then(|c| c.get(1))
-                        .and_then(|m| m.as_str().parse::<f64>().ok())
-                })
-            });
 
         offers.push(MarketOffer {
             id: offer_id,
@@ -482,14 +443,59 @@ pub fn parse_market_offers(html: &str, node_id: i64) -> Vec<MarketOffer> {
     offers
 }
 
+fn parse_market_seller(
+    item: &ElementRef,
+    seller_node: &Option<ElementRef>,
+) -> (String, i64, bool, u32, Option<f64>) {
+    let seller_name = seller_node
+        .as_ref()
+        .map(|el| el.text().collect::<String>().trim().to_string())
+        .unwrap_or_default();
+    let seller_id = seller_node
+        .as_ref()
+        .and_then(|el| el.value().attr("data-href"))
+        .and_then(|href| USER_ID_REGEX.captures(href))
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<i64>().ok())
+        .unwrap_or_default();
+    let seller_online = item.value().attr("data-online") == Some("1");
+
+    let reviews_selector = Selector::parse("div.media-user-reviews").unwrap();
+    let rating_count_selector = Selector::parse("span.rating-mini-count").unwrap();
+    let rating_stars_selector = Selector::parse("div.rating-stars").unwrap();
+
+    let seller_reviews = item
+        .select(&reviews_selector)
+        .next()
+        .map(|node| {
+            node.select(&rating_count_selector)
+                .next().map_or_else(|| node.text().collect::<String>(), |n| n.text().collect::<String>())
+        })
+        .and_then(|text| {
+            REVIEWS_REGEX
+                .captures(&text)
+                .and_then(|c| c.get(1))
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+        })
+        .unwrap_or_default();
+    let seller_rating = item
+        .select(&reviews_selector)
+        .next()
+        .and_then(|node| node.select(&rating_stars_selector).next())
+        .and_then(|node| {
+            node.value().classes().find_map(|class| {
+                RATING_REGEX
+                    .captures(class)
+                    .and_then(|c| c.get(1))
+                    .and_then(|m| m.as_str().parse::<f64>().ok())
+            })
+        });
+
+    (seller_name, seller_id, seller_online, seller_reviews, seller_rating)
+}
+
 pub fn parse_offer_details(html: &str, offer_id: i64, node_id: i64) -> OfferDetails {
     let document = Html::parse_document(html);
-    let form_group_selector = Selector::parse("div.form-group").unwrap();
-    let label_selector = Selector::parse("label").unwrap();
-    let input_selector = Selector::parse("input").unwrap();
-    let textarea_selector = Selector::parse("textarea").unwrap();
-    let select_selector = Selector::parse("select").unwrap();
-    let option_selector = Selector::parse("option").unwrap();
 
     let current = OfferEdit {
         quantity: Some(extract_field_value(&document, "fields[quantity]")),
@@ -511,6 +517,24 @@ pub fn parse_offer_details(html: &str, offer_id: i64, node_id: i64) -> OfferDeta
         location: Some(extract_input_value(&document, "location")),
         deleted: None,
     };
+
+    let custom_fields = parse_offer_custom_fields(&document);
+
+    OfferDetails {
+        offer_id,
+        node_id,
+        current,
+        custom_fields,
+    }
+}
+
+fn parse_offer_custom_fields(document: &Html) -> Vec<OfferField> {
+    let form_group_selector = Selector::parse("div.form-group").unwrap();
+    let label_selector = Selector::parse("label").unwrap();
+    let input_selector = Selector::parse("input").unwrap();
+    let textarea_selector = Selector::parse("textarea").unwrap();
+    let select_selector = Selector::parse("select").unwrap();
+    let option_selector = Selector::parse("option").unwrap();
 
     let mut custom_fields = Vec::new();
     for group in document.select(&form_group_selector) {
@@ -606,12 +630,7 @@ pub fn parse_offer_details(html: &str, offer_id: i64, node_id: i64) -> OfferDeta
         }
     }
 
-    OfferDetails {
-        offer_id,
-        node_id,
-        current,
-        custom_fields,
-    }
+    custom_fields
 }
 
 pub fn parse_category_subcategories(html: &str) -> Vec<CategorySubcategory> {

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ pub struct GoldenPayConfig {
     pub user_agent: String,
     pub poll_interval: Duration,
     pub retry: RetryPolicy,
+    pub max_concurrent_requests: Option<NonZeroUsize>,
     pub proxy: Option<String>,
     pub state_path: Option<PathBuf>,
 }
@@ -21,6 +23,7 @@ impl fmt::Debug for GoldenPayConfig {
             .field("user_agent", &self.user_agent)
             .field("poll_interval", &self.poll_interval)
             .field("retry", &self.retry)
+            .field("max_concurrent_requests", &self.max_concurrent_requests)
             .field("proxy", &self.proxy)
             .field("state_path", &self.state_path)
             .finish()
@@ -40,6 +43,7 @@ pub struct GoldenPayConfigBuilder {
     user_agent: Option<String>,
     poll_interval: Option<Duration>,
     retry: Option<RetryPolicy>,
+    max_concurrent_requests: Option<NonZeroUsize>,
     proxy: Option<String>,
     state_path: Option<PathBuf>,
 }
@@ -76,6 +80,7 @@ impl Default for GoldenPayConfig {
             user_agent: format!("goldenpay/{}", env!("CARGO_PKG_VERSION")),
             poll_interval: Duration::from_secs(2),
             retry: RetryPolicy::default(),
+            max_concurrent_requests: None,
             proxy: None,
             state_path: None,
         }
@@ -140,6 +145,12 @@ impl GoldenPayConfigBuilder {
     }
 
     #[must_use]
+    pub fn max_concurrent_requests(mut self, max: NonZeroUsize) -> Self {
+        self.max_concurrent_requests = Some(max);
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> GoldenPayConfig {
         let defaults = GoldenPayConfig::default();
         GoldenPayConfig {
@@ -148,6 +159,7 @@ impl GoldenPayConfigBuilder {
             user_agent: self.user_agent.unwrap_or(defaults.user_agent),
             poll_interval: self.poll_interval.unwrap_or(defaults.poll_interval),
             retry: self.retry.unwrap_or(defaults.retry),
+            max_concurrent_requests: self.max_concurrent_requests,
             proxy: self.proxy,
             state_path: self.state_path,
         }

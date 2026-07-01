@@ -10,6 +10,19 @@ use crate::offer::OfferEditBuilder;
 use std::time::Duration;
 use tokio::task::JoinSet;
 
+/// Re-evaluates `$expr` on [`GoldenPayError::Unauthorized`] after reconnecting.
+macro_rules! reconnect_on_auth {
+    ($self:ident, $expr:expr) => {{
+        let result = $expr.await;
+        if matches_err_unauthorized(&result) {
+            $self.reconnect().await?;
+            $expr.await
+        } else {
+            result
+        }
+    }};
+}
+
 /// Manages an authenticated [`GoldenPaySession`] with automatic reconnection
 /// when the session expires (HTTP 401/403).
 ///
@@ -93,13 +106,7 @@ impl SessionManager {
         chat_id: &str,
         text: &str,
     ) -> Result<RunnerResponse, GoldenPayError> {
-        let result = self.session.send_message(chat_id, text).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.send_message(chat_id, text).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.send_message(chat_id, text))
     }
 
     /// Sends chat messages to multiple dialogs concurrently.
@@ -169,13 +176,7 @@ impl SessionManager {
 
     /// Fetches current order shortcuts from the trade page.
     pub async fn fetch_orders(&mut self) -> Result<Vec<OrderInfo>, GoldenPayError> {
-        let result = self.session.fetch_orders().await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_orders().await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_orders())
     }
 
     /// Fetches orders filtered by the given options.
@@ -188,13 +189,7 @@ impl SessionManager {
 
     /// Fetches only paid orders from the trade page.
     pub async fn fetch_paid_orders(&mut self) -> Result<Vec<OrderInfo>, GoldenPayError> {
-        let result = self.session.fetch_paid_orders().await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_paid_orders().await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_paid_orders())
     }
 
     /// Loads a single order page with parsed metadata and secrets.
@@ -202,13 +197,7 @@ impl SessionManager {
         &mut self,
         order_id: &str,
     ) -> Result<OrderPage, GoldenPayError> {
-        let result = self.session.fetch_order_page(order_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_order_page(order_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_order_page(order_id))
     }
 
     /// Fetches messages from a chat through the runner endpoint.
@@ -216,13 +205,7 @@ impl SessionManager {
         &mut self,
         chat_id: &str,
     ) -> Result<Vec<ChatMessage>, GoldenPayError> {
-        let result = self.session.fetch_chat_messages(chat_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_chat_messages(chat_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_chat_messages(chat_id))
     }
 
     /// Fetches your offers for a given node.
@@ -230,13 +213,7 @@ impl SessionManager {
         &mut self,
         node_id: i64,
     ) -> Result<Vec<Offer>, GoldenPayError> {
-        let result = self.session.fetch_my_offers(node_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_my_offers(node_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_my_offers(node_id))
     }
 
     /// Fetches public market offers for a given node.
@@ -244,13 +221,7 @@ impl SessionManager {
         &mut self,
         node_id: i64,
     ) -> Result<Vec<MarketOffer>, GoldenPayError> {
-        let result = self.session.fetch_market_offers(node_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_market_offers(node_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_market_offers(node_id))
     }
 
     /// Loads editable offer details and dynamic custom fields.
@@ -259,13 +230,7 @@ impl SessionManager {
         node_id: i64,
         offer_id: i64,
     ) -> Result<OfferDetails, GoldenPayError> {
-        let result = self.session.fetch_offer_details(node_id, offer_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_offer_details(node_id, offer_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_offer_details(node_id, offer_id))
     }
 
     /// Applies an offer edit patch on top of current remote values.
@@ -275,13 +240,7 @@ impl SessionManager {
         offer_id: i64,
         patch: OfferEdit,
     ) -> Result<OfferSaveResponse, GoldenPayError> {
-        let result = self.session.edit_offer(node_id, offer_id, patch.clone()).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.edit_offer(node_id, offer_id, patch).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.edit_offer(node_id, offer_id, patch.clone()))
     }
 
     /// Applies an offer edit built through [`OfferEditBuilder`].
@@ -300,13 +259,7 @@ impl SessionManager {
         node_id: i64,
         price: f64,
     ) -> Result<PriceCalculation, GoldenPayError> {
-        let result = self.session.calc_price(node_id, price).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.calc_price(node_id, price).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.calc_price(node_id, price))
     }
 
     /// Lists subcategories for a given node.
@@ -314,13 +267,7 @@ impl SessionManager {
         &mut self,
         node_id: i64,
     ) -> Result<Vec<CategorySubcategory>, GoldenPayError> {
-        let result = self.session.fetch_category_subcategories(node_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_category_subcategories(node_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_category_subcategories(node_id))
     }
 
     /// Lists available category filters for a given node.
@@ -328,13 +275,7 @@ impl SessionManager {
         &mut self,
         node_id: i64,
     ) -> Result<Vec<CategoryFilter>, GoldenPayError> {
-        let result = self.session.fetch_category_filters(node_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_category_filters(node_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_category_filters(node_id))
     }
 
     /// Fetches category filters and subcategories using a single page load.
@@ -342,26 +283,14 @@ impl SessionManager {
         &mut self,
         node_id: i64,
     ) -> Result<(Vec<CategorySubcategory>, Vec<CategoryFilter>), GoldenPayError> {
-        let result = self.session.fetch_category_metadata(node_id).await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_category_metadata(node_id).await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_category_metadata(node_id))
     }
 
     /// Fetches the full category tree from the marketplace root.
     pub async fn fetch_category_tree(
         &mut self,
     ) -> Result<Vec<CategoryNode>, GoldenPayError> {
-        let result = self.session.fetch_category_tree().await;
-        if matches_err_unauthorized(&result) {
-            self.reconnect().await?;
-            self.session.fetch_category_tree().await
-        } else {
-            result
-        }
+        reconnect_on_auth!(self, self.session.fetch_category_tree())
     }
 }
 

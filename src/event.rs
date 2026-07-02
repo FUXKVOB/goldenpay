@@ -10,6 +10,10 @@ pub struct BotOptions {
     pub ignore_own_messages: bool,
     /// If true, new orders also emit their initial chat messages.
     pub emit_messages_for_new_orders: bool,
+    /// Category node IDs to automatically raise.
+    pub auto_raise_nodes: Option<Vec<i64>>,
+    /// Interval for auto-raising offers (defaults to 2 hours if None and nodes are set).
+    pub auto_raise_interval: Option<std::time::Duration>,
 }
 
 impl Default for BotOptions {
@@ -17,6 +21,8 @@ impl Default for BotOptions {
         Self {
             ignore_own_messages: true,
             emit_messages_for_new_orders: true,
+            auto_raise_nodes: None,
+            auto_raise_interval: None,
         }
     }
 }

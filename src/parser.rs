@@ -3,8 +3,8 @@ use crate::models::{
     CategoryFilter, CategoryFilterOption, CategoryFilterType, CategoryNode, CategorySubcategory,
     CategorySubcategoryType, ChatMessage, MarketOffer, Offer, OfferDetails, OfferEdit, OfferField,
     OfferFieldOption, OfferFieldType, OrderInfo, OrderPage, OrderStatus, PriceCalculation, Review,
-    RunnerChatMessage, RunnerChatNode, RunnerObject, RunnerOrdersCounters, RunnerUnknownObject,
-    UserInfo,
+    ProfileReview, RunnerChatMessage, RunnerChatNode, RunnerObject, RunnerOrdersCounters,
+    RunnerUnknownObject, UserInfo,
 };
 use crate::utils::extract_phpsessid;
 use regex::Regex;
@@ -1246,4 +1246,50 @@ mod tests {
             let _ = parse_category_subcategories(&html);
         }
     }
+}
+
+pub fn parse_profile_reviews(html: &str) -> Vec<ProfileReview> {
+    let document = Html::parse_document(html);
+    let review_selector = Selector::parse(".review-item").unwrap();
+    let author_selector = Selector::parse(".review-author a, a[href*='/users/']").unwrap();
+    let text_selector = Selector::parse(".review-text").unwrap();
+    let stars_selector = Selector::parse(".rating-mini .fas.fa-star").unwrap();
+    let order_selector = Selector::parse("a[href*='/orders/']").unwrap();
+    let user_regex = &USER_REGEX;
+    let order_regex = Regex::new(r"/orders/([A-Za-z0-9]+)/").unwrap();
+
+    let mut reviews = Vec::new();
+    for node in document.select(&review_selector) {
+        let author_link = node.select(&author_selector).next();
+        let buyer_username = author_link
+            .map(|n| n.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
+        let buyer_id = author_link
+            .and_then(|n| n.value().attr("href"))
+            .and_then(|href| user_regex.captures(href))
+            .and_then(|caps| caps.get(1))
+            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .unwrap_or_default();
+
+        let stars = node.select(&stars_selector).count() as i32;
+        let text = node.select(&text_selector).next().map(|n| n.text().collect::<String>().trim().to_string());
+        
+        let order_id = node.select(&order_selector)
+            .next()
+            .and_then(|n| n.value().attr("href"))
+            .and_then(|href| order_regex.captures(href))
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string());
+
+        if buyer_id > 0 {
+            reviews.push(ProfileReview {
+                buyer_username,
+                buyer_id,
+                stars,
+                text,
+                order_id,
+            });
+        }
+    }
+    reviews
 }

@@ -78,6 +78,14 @@ impl GoldenPayBot {
         self
     }
 
+    /// Enables auto-raising for specified category/game node IDs with an optional interval (defaults to 2 hours).
+    #[must_use]
+    pub fn with_auto_raise(mut self, node_ids: Vec<i64>, interval: Option<std::time::Duration>) -> Self {
+        self.options.auto_raise_nodes = Some(node_ids);
+        self.options.auto_raise_interval = interval;
+        self
+    }
+
     /// Associates a cancellation token for graceful shutdown.
     /// When cancelled, the bot's [`run`](GoldenPayBot::run) loop exits cleanly.
     #[must_use]
@@ -261,6 +269,9 @@ impl GoldenPayBot {
     {
         tracing::info!("bot started");
         let token = self.cancel_token.clone();
+        let auto_raise_interval = self.options.auto_raise_interval.unwrap_or(std::time::Duration::from_secs(7200));
+        let mut last_raise = tokio::time::Instant::now() - auto_raise_interval;
+
         loop {
             tokio::select! {
                 () = token.cancelled() => {
@@ -272,6 +283,25 @@ impl GoldenPayBot {
                     for event in events {
                         handler(event, self.manager.session()).await?;
                     }
+
+                    // Handle auto-raising if configured
+                    if let Some(nodes) = &self.options.auto_raise_nodes {
+                        let now = tokio::time::Instant::now();
+                        if now.duration_since(last_raise) >= auto_raise_interval {
+                            for node_id in nodes {
+                                match self.manager.raise_offers(*node_id).await {
+                                    Ok(res) => {
+                                        tracing::info!(node_id, success = res.success, message = ?res.message, "auto-raised offers");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(node_id, error = %e, "failed to auto-raise offers");
+                                    }
+                                }
+                            }
+                            last_raise = now;
+                        }
+                    }
+
                     tokio::time::sleep(self.manager.poll_interval()).await;
                 }
             }

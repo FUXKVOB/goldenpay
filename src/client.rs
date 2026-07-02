@@ -5,14 +5,14 @@ use crate::error::GoldenPayError;
 use crate::models::{
     CategoryFilter, CategoryNode, CategorySubcategory, ChatMessage, MarketOffer, Offer,
     OfferDetails, OfferEdit, OfferSaveResponse, OrderInfo, OrderPage, PriceCalculation,
-    RunnerResponse, UserInfo,
+    RunnerResponse, UserInfo, ProfileReview, RaiseOffersResponse,
 };
 use crate::offer::OfferEditBuilder;
 use crate::models::FetchOrderOptions;
 use crate::parser::{
     parse_category_filters, parse_category_subcategories, parse_category_tree, parse_chat_messages,
     parse_market_offers, parse_my_offers, parse_offer_details, parse_order_page, parse_orders,
-    parse_price_calculation, parse_runner_objects, parse_user,
+    parse_price_calculation, parse_runner_objects, parse_user, parse_profile_reviews,
 };
 use crate::urls::Urls;
 use crate::utils::{random_tag, retry_sleep};
@@ -398,6 +398,106 @@ impl GoldenPaySession {
             parse_category_filters(&body),
         ))
     }
+
+    /// Raises all offers in the specified game/category.
+    pub async fn raise_offers(&self, node_id: i64) -> Result<RaiseOffersResponse, GoldenPayError> {
+        let payload = format!(
+            "game_id={node_id}&node_id={node_id}&csrf_token={}",
+            urlencoding::encode(&self.user.csrf_token)
+        );
+        let response = self
+            .post_form(
+                self.urls.lots_raise(),
+                payload,
+                Some(self.urls.lots_trade(node_id)),
+                "application/json, text/javascript, */*; q=0.01",
+            )
+            .await?;
+        let res: RaiseOffersResponse = response.json().await?;
+        Ok(res)
+    }
+
+    /// Sends a reply to a buyer's review for a given order.
+    pub async fn reply_to_review(
+        &self,
+        order_id: &str,
+        text: &str,
+    ) -> Result<RunnerResponse, GoldenPayError> {
+        let payload = format!(
+            "id={}&text={}&csrf_token={}",
+            urlencoding::encode(order_id),
+            urlencoding::encode(text),
+            urlencoding::encode(&self.user.csrf_token)
+        );
+        let response = self
+            .post_form(
+                format!("{}/orders/reviewReply", self.urls.base()),
+                payload,
+                None::<String>,
+                "application/json, text/javascript, */*; q=0.01",
+            )
+            .await?;
+        Ok(parse_runner_response(response.json().await?))
+    }
+
+    /// Fetches all received reviews from the specified user's profile.
+    pub async fn fetch_profile_reviews(&self, user_id: i64) -> Result<Vec<ProfileReview>, GoldenPayError> {
+        let response = self.get_html(format!("{}/users/{}/", self.urls.base(), user_id)).await?;
+        let body = response.text().await?;
+        Ok(parse_profile_reviews(&body))
+    }
+
+    /// Sends a heartbeat/ping to the runner endpoint to maintain online status.
+    pub async fn ping(&self) -> Result<RunnerResponse, GoldenPayError> {
+        let objects_json = serde_json::to_string(&vec![json!({
+            "type": "chat_node",
+            "id": "0",
+            "tag": random_tag(),
+            "data": { "node": "0", "last_message": -1, "content": "" }
+        })])?;
+
+        let payload = format!(
+            "objects={}&request=false&csrf_token={}",
+            urlencoding::encode(&objects_json),
+            urlencoding::encode(&self.user.csrf_token)
+        );
+
+        self.request_runner(payload).await
+    }
+
+    pub async fn upload_chat_file(
+        &self,
+        chat_id: &str,
+        file_bytes: &[u8],
+        filename: &str,
+    ) -> Result<serde_json::Value, GoldenPayError> {
+        let response = self
+            .request_with_retry(|| {
+                let form = reqwest::multipart::Form::new()
+                    .text("csrf_token", self.user.csrf_token.clone())
+                    .text("node", chat_id.to_string())
+                    .part(
+                        "file",
+                        reqwest::multipart::Part::bytes(file_bytes.to_vec())
+                            .file_name(filename.to_string())
+                            .mime_str("application/octet-stream")
+                            .unwrap(),
+                    );
+
+                self.http
+                    .post(self.urls.chat_upload())
+                    .header(USER_AGENT, &self.config.user_agent)
+                    .header(COOKIE, self.cookie_header())
+                    .header("x-requested-with", "XMLHttpRequest")
+                    .multipart(form)
+            })
+            .await?;
+
+        let val: serde_json::Value = response.json().await?;
+        Ok(val)
+    }
+
+
 
     async fn request_runner(&self, payload: String) -> Result<RunnerResponse, GoldenPayError> {
         let response = self

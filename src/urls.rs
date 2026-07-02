@@ -54,4 +54,13 @@ impl Urls {
     pub fn lots_calc(&self) -> String {
         format!("{}/lots/calc", self.base())
     }
+
+    pub fn lots_raise(&self) -> String {
+        format!("{}/yopt/lots/raise", self.base())
+    }
+
+    pub fn chat_upload(&self) -> String {
+        format!("{}/chat/upload", self.base())
+    }
 }
+

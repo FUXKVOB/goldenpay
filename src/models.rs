@@ -75,6 +75,24 @@ pub struct Review {
     pub text: Option<String>,
 }
 
+/// A buyer's review parsed from user profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileReview {
+    pub buyer_username: String,
+    pub buyer_id: i64,
+    pub stars: i32,
+    pub text: Option<String>,
+    pub order_id: Option<String>,
+}
+
+/// Response returned from the lots-raise endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RaiseOffersResponse {
+    pub success: bool,
+    pub message: Option<String>,
+}
+
+
 /// Price breakdown including seller payout, buyer cost, and commission.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceCalculation {

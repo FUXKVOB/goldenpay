@@ -6,7 +6,7 @@ use crate::error::GoldenPayError;
 use crate::models::{
     CategoryFilter, CategoryNode, CategorySubcategory, ChatMessage, FetchOrderOptions, MarketOffer,
     Offer, OfferDetails, OfferEdit, OfferSaveResponse, OrderInfo, OrderPage, PriceCalculation,
-    RunnerResponse, UserInfo,
+    RunnerResponse, UserInfo, ProfileReview, RaiseOffersResponse,
 };
 use crate::offer::OfferEditBuilder;
 use std::time::Duration;
@@ -310,6 +310,40 @@ impl SessionManager {
         &mut self,
     ) -> Result<Vec<CategoryNode>, GoldenPayError> {
         reconnect_on_auth!(self, self.session.fetch_category_tree())
+    }
+
+    /// Raises all offers in the specified game/category.
+    pub async fn raise_offers(&mut self, node_id: i64) -> Result<RaiseOffersResponse, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.raise_offers(node_id))
+    }
+
+    /// Sends a reply to a buyer's review for a given order.
+    pub async fn reply_to_review(
+        &mut self,
+        order_id: &str,
+        text: &str,
+    ) -> Result<RunnerResponse, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.reply_to_review(order_id, text))
+    }
+
+    /// Fetches all received reviews from the specified user's profile.
+    pub async fn fetch_profile_reviews(&mut self, user_id: i64) -> Result<Vec<ProfileReview>, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.fetch_profile_reviews(user_id))
+    }
+
+    /// Sends a heartbeat/ping to the runner endpoint to maintain online status.
+    pub async fn ping(&mut self) -> Result<RunnerResponse, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.ping())
+    }
+
+    /// Uploads a file/image to a chat, returning the parsed JSON details.
+    pub async fn upload_chat_file(
+        &mut self,
+        chat_id: &str,
+        file_bytes: &[u8],
+        filename: &str,
+    ) -> Result<serde_json::Value, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.upload_chat_file(chat_id, file_bytes, filename))
     }
 }
 

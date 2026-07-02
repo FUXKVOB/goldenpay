@@ -2,6 +2,7 @@
 
 use crate::error::GoldenPayError;
 use crate::event::{BotOptions, EventStream, MessageFilter};
+use chrono::{Local, Timelike};
 use crate::models::{BotState, ChatMessage, OrderInfo};
 use crate::session::SessionManager;
 use crate::storage::{JsonStateStore, MemoryStateStore, StateStore};
@@ -90,6 +91,20 @@ impl GoldenPayBot {
     #[must_use]
     pub fn with_welcome_message(mut self, message: impl Into<String>) -> Self {
         self.options.auto_welcome_message = Some(message.into());
+        self
+    }
+
+    /// Configures the bot's sleep schedule to activate/deactivate specified offers during configured hours.
+    #[must_use]
+    pub fn with_sleep_schedule(
+        mut self,
+        start_hour: u32,
+        end_hour: u32,
+        node_offers: Vec<(i64, i64)>,
+    ) -> Self {
+        self.options.sleep_start_hour = Some(start_hour);
+        self.options.sleep_end_hour = Some(end_hour);
+        self.options.sleep_node_offers = Some(node_offers);
         self
     }
 
@@ -278,6 +293,7 @@ impl GoldenPayBot {
         let token = self.cancel_token.clone();
         let auto_raise_interval = self.options.auto_raise_interval.unwrap_or(std::time::Duration::from_secs(7200));
         let mut last_raise = tokio::time::Instant::now() - auto_raise_interval;
+        let mut currently_sleeping = None;
 
         loop {
             tokio::select! {
@@ -297,6 +313,37 @@ impl GoldenPayBot {
                             }
                         }
                         handler(event, self.manager.session()).await?;
+                    }
+
+                    // Handle sleep schedule if configured
+                    if let (Some(start), Some(end), Some(offers)) = (
+                        self.options.sleep_start_hour,
+                        self.options.sleep_end_hour,
+                        &self.options.sleep_node_offers,
+                    ) {
+                        let hour = Local::now().hour();
+                        let should_sleep = if start <= end {
+                            hour >= start && hour < end
+                        } else {
+                            hour >= start || hour < end
+                        };
+
+                        if currently_sleeping != Some(should_sleep) {
+                            tracing::info!(should_sleep, "transitioning sleep state");
+                            for &(node_id, offer_id) in offers {
+                                let mut patch = crate::models::OfferEdit::default();
+                                patch.active = Some(!should_sleep);
+                                match self.manager.edit_offer(node_id, offer_id, patch).await {
+                                    Ok(_) => {
+                                        tracing::info!(node_id, offer_id, active = !should_sleep, "updated offer state according to sleep schedule");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(node_id, offer_id, error = %e, "failed to update offer state for sleep schedule");
+                                    }
+                                }
+                            }
+                            currently_sleeping = Some(should_sleep);
+                        }
                     }
 
                     // Handle auto-raising if configured

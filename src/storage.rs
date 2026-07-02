@@ -93,6 +93,83 @@ async fn write_atomic_json(path: &std::path::Path, raw: &str) -> Result<(), Gold
     Ok(())
 }
 
+/// SQLite-database-backed bot state store for reliable persistence.
+pub struct SqliteStateStore {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+}
+
+impl SqliteStateStore {
+    /// Creates or opens a SQLite state store at the given path.
+    pub fn new(path: impl AsRef<std::path::Path>) -> Result<Self, GoldenPayError> {
+        let conn = rusqlite::Connection::open(path).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS seen_orders (order_id TEXT PRIMARY KEY)",
+            [],
+        ).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS seen_messages (chat_id TEXT PRIMARY KEY, last_message_id INTEGER)",
+            [],
+        ).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+}
+
+#[async_trait]
+impl StateStore for SqliteStateStore {
+    async fn load(&self) -> Result<BotState, GoldenPayError> {
+        let conn = self.conn.lock().await;
+        let mut stmt_orders = conn.prepare("SELECT order_id FROM seen_orders").map_err(|e| GoldenPayError::state(e.to_string()))?;
+        let order_rows = stmt_orders.query_map([], |row| row.get::<_, String>(0)).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        let mut seen_orders = Vec::new();
+        for order_id in order_rows {
+            seen_orders.push(order_id.map_err(|e| GoldenPayError::state(e.to_string()))?);
+        }
+
+        let mut stmt_msgs = conn.prepare("SELECT chat_id, last_message_id FROM seen_messages").map_err(|e| GoldenPayError::state(e.to_string()))?;
+        let msg_rows = stmt_msgs.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        let mut seen_messages = std::collections::HashMap::new();
+        for row in msg_rows {
+            let (chat_id, msg_id) = row.map_err(|e| GoldenPayError::state(e.to_string()))?;
+            seen_messages.insert(chat_id, msg_id);
+        }
+
+        Ok(BotState {
+            seen_orders,
+            seen_messages,
+        })
+    }
+
+    async fn save(&self, state: &BotState) -> Result<(), GoldenPayError> {
+        let mut conn = self.conn.lock().await;
+        let tx = conn.transaction().map_err(|e| GoldenPayError::state(e.to_string()))?;
+
+        tx.execute("DELETE FROM seen_orders", []).map_err(|e| GoldenPayError::state(e.to_string()))?;
+        tx.execute("DELETE FROM seen_messages", []).map_err(|e| GoldenPayError::state(e.to_string()))?;
+
+        {
+            let mut insert_order = tx.prepare("INSERT INTO seen_orders (order_id) VALUES (?)").map_err(|e| GoldenPayError::state(e.to_string()))?;
+            for order_id in &state.seen_orders {
+                insert_order.execute([order_id]).map_err(|e| GoldenPayError::state(e.to_string()))?;
+            }
+        }
+
+        {
+            let mut insert_msg = tx.prepare("INSERT INTO seen_messages (chat_id, last_message_id) VALUES (?, ?)").map_err(|e| GoldenPayError::state(e.to_string()))?;
+            for (chat_id, msg_id) in &state.seen_messages {
+                insert_msg.execute(rusqlite::params![chat_id, msg_id]).map_err(|e| GoldenPayError::state(e.to_string()))?;
+            }
+        }
+
+        tx.commit().map_err(|e| GoldenPayError::state(e.to_string()))?;
+        Ok(())
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +187,24 @@ mod tests {
     async fn json_store_roundtrip() {
         let path = temp_path("state");
         let store = JsonStateStore::new(&path);
+
+        let mut state = BotState::default();
+        state.seen_orders.push("ORDER123".to_string());
+        state.seen_messages.insert("users-1-2".to_string(), 42);
+
+        store.save(&state).await.unwrap();
+        let loaded = store.load().await.unwrap();
+
+        assert_eq!(loaded.seen_orders, vec!["ORDER123".to_string()]);
+        assert_eq!(loaded.seen_messages.get("users-1-2"), Some(&42));
+
+        let _ = fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_roundtrip() {
+        let path = temp_path("sqlite-state");
+        let store = SqliteStateStore::new(&path).unwrap();
 
         let mut state = BotState::default();
         state.seen_orders.push("ORDER123".to_string());

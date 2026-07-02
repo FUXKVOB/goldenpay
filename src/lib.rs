@@ -55,7 +55,7 @@ pub use models::{
 };
 pub use offer::OfferEditBuilder;
 pub use security::{validate_golden_key, SecureString};
-pub use storage::{JsonStateStore, MemoryStateStore, StateStore};
+pub use storage::{JsonStateStore, MemoryStateStore, SqliteStateStore, StateStore};
 pub use webhook::{WebhookConfig, WebhookEvent, WebhookHandler, WebhookPayload, WebhookServer};
 
 #[doc(hidden)]

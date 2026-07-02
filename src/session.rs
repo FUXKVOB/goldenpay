@@ -92,6 +92,11 @@ impl SessionManager {
         self.session.check_connection().await
     }
 
+    /// Checks if the configured proxy works correctly by requesting the home page.
+    pub async fn validate_proxy(&self) -> Result<bool, GoldenPayError> {
+        self.client.validate_proxy().await
+    }
+
     /// Rotates the golden key and reconnects with the new credentials.
     ///
     /// On success the session is re-established with the new key.
@@ -352,6 +357,17 @@ impl SessionManager {
         request: &WithdrawRequest,
     ) -> Result<RunnerResponse, GoldenPayError> {
         reconnect_on_auth!(self, self.session.withdraw(request))
+    }
+
+    /// Automatically sets the offer price to undercut the lowest competitor's price.
+    pub async fn undercut_price(
+        &mut self,
+        node_id: i64,
+        offer_id: i64,
+        undercut_by: f64,
+        min_price: f64,
+    ) -> Result<OfferSaveResponse, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.undercut_price(node_id, offer_id, undercut_by, min_price))
     }
 }
 

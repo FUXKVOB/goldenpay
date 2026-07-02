@@ -16,6 +16,12 @@ pub struct BotOptions {
     pub auto_raise_interval: Option<std::time::Duration>,
     /// Welcome message to automatically send when a new order is received.
     pub auto_welcome_message: Option<String>,
+    /// Hour of the day (0-23) when the bot should go to sleep (deactivate offers).
+    pub sleep_start_hour: Option<u32>,
+    /// Hour of the day (0-23) when the bot should wake up (activate offers).
+    pub sleep_end_hour: Option<u32>,
+    /// List of `(node_id, offer_id)` to deactivate/activate according to the sleep schedule.
+    pub sleep_node_offers: Option<Vec<(i64, i64)>>,
 }
 
 impl Default for BotOptions {
@@ -26,6 +32,9 @@ impl Default for BotOptions {
             auto_raise_nodes: None,
             auto_raise_interval: None,
             auto_welcome_message: None,
+            sleep_start_hour: None,
+            sleep_end_hour: None,
+            sleep_node_offers: None,
         }
     }
 }

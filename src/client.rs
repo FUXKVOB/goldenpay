@@ -120,6 +120,27 @@ impl GoldenPay {
     {
         request_with_retry(&self.config, build).await
     }
+
+    /// Checks if the configured proxy works correctly by requesting the home page.
+    ///
+    /// Returns `Ok(true)` if the proxy works, `Ok(false)` if no proxy is set, or `Err` if the request fails.
+    pub async fn validate_proxy(&self) -> Result<bool, GoldenPayError> {
+        if self.config.proxy.is_none() {
+            return Ok(false);
+        }
+
+        let res = self.http
+            .get(self.urls.home())
+            .header(USER_AGENT, &self.config.user_agent)
+            .send()
+            .await;
+
+        match res {
+            Ok(response) if response.status().is_success() => Ok(true),
+            Ok(_) => Ok(false),
+            Err(e) => Err(GoldenPayError::Http { source: e }),
+        }
+    }
 }
 
 impl GoldenPaySession {
@@ -522,6 +543,48 @@ impl GoldenPaySession {
 
         Ok(parse_runner_response(response.json().await?))
     }
+
+    /// Automatically sets the offer price to undercut the lowest competitor's price.
+    ///
+    /// Finds the lowest public competitor price for the given category node ID
+    /// and updates the offer price to `competitor_price - undercut_by`, bounded below by `min_price`.
+    pub async fn undercut_price(
+        &self,
+        node_id: i64,
+        offer_id: i64,
+        undercut_by: f64,
+        min_price: f64,
+    ) -> Result<OfferSaveResponse, GoldenPayError> {
+        let market_offers = self.fetch_market_offers(node_id).await?;
+        let my_id = self.user.id;
+
+        let min_competitor_price = market_offers
+            .iter()
+            .filter(|o| o.seller_id != my_id && !o.is_promo)
+            .map(|o| o.price)
+            .fold(None, |min, p| match min {
+                Some(m) if p < m => Some(p),
+                Some(m) => Some(m),
+                None => Some(p),
+            });
+
+        let target_price = match min_competitor_price {
+            Some(price) => {
+                let undercut = price - undercut_by;
+                if undercut < min_price {
+                    min_price
+                } else {
+                    undercut
+                }
+            }
+            None => min_price,
+        };
+
+        let mut patch = OfferEdit::default();
+        patch.price = Some(format!("{}", target_price));
+        self.edit_offer(node_id, offer_id, patch).await
+    }
+
 
 
 

@@ -26,6 +26,14 @@ impl fmt::Debug for UserInfo {
     }
 }
 
+/// Statistics calculated from a list of orders.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StoreStatistics {
+    pub total_sales_volume: usize,
+    pub total_orders: usize,
+    pub unique_buyers: usize,
+}
+
 /// A single chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChatMessage {

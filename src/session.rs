@@ -216,6 +216,14 @@ impl SessionManager {
         self.fetch_orders().await.map(|orders| options.filter(orders))
     }
 
+    /// Calculates statistics for orders matching the provided options.
+    pub async fn calculate_statistics(
+        &mut self,
+        options: &FetchOrderOptions,
+    ) -> Result<crate::models::StoreStatistics, GoldenPayError> {
+        reconnect_on_auth!(self, self.session.calculate_statistics(options))
+    }
+
     /// Fetches only paid orders from the trade page.
     pub async fn fetch_paid_orders(&mut self) -> Result<Vec<OrderInfo>, GoldenPayError> {
         reconnect_on_auth!(self, self.session.fetch_paid_orders())

@@ -6,6 +6,7 @@ use crate::models::{
     CategoryFilter, CategoryNode, CategorySubcategory, ChatMessage, MarketOffer, Offer,
     OfferDetails, OfferEdit, OfferSaveResponse, OrderInfo, OrderPage, PriceCalculation,
     RunnerResponse, UserInfo, ProfileReview, RaiseOffersResponse, WithdrawRequest,
+    StoreStatistics,
 };
 use crate::offer::OfferEditBuilder;
 use crate::models::FetchOrderOptions;
@@ -255,6 +256,29 @@ impl GoldenPaySession {
         options: &FetchOrderOptions,
     ) -> Result<Vec<OrderInfo>, GoldenPayError> {
         self.fetch_orders().await.map(|orders| options.filter(orders))
+    }
+
+    /// Calculates statistics for orders matching the provided options.
+    pub async fn calculate_statistics(
+        &self,
+        options: &FetchOrderOptions,
+    ) -> Result<StoreStatistics, GoldenPayError> {
+        let orders = self.fetch_orders_with(options).await?;
+        
+        let mut total_sales_volume = 0;
+        let mut unique_buyers = std::collections::HashSet::new();
+        let total_orders = orders.len();
+
+        for order in &orders {
+            total_sales_volume += order.amount as usize;
+            unique_buyers.insert(order.buyer_id);
+        }
+
+        Ok(StoreStatistics {
+            total_sales_volume,
+            total_orders,
+            unique_buyers: unique_buyers.len(),
+        })
     }
 
     /// Loads a single order page with parsed metadata and secrets.
